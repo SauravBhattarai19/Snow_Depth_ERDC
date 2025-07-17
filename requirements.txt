@@ -1,0 +1,11 @@
+streamlit==1.29.0
+earthengine-api==0.1.384
+folium==0.15.1
+streamlit-folium==0.17.4
+geemap==0.29.6
+geopandas==0.14.1
+rasterio==1.3.9
+numpy==1.24.3
+requests==2.31.0
+setuptools==69.0.3
+packaging==23.2
