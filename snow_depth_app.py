@@ -8,6 +8,7 @@ import datetime
 import os
 import zipfile
 import tempfile
+import io
 from typing import List, Dict, Any, Optional
 import math
 import geopandas as gpd
@@ -15,6 +16,8 @@ from shapely.geometry import box, Polygon
 import rasterio
 from rasterio.merge import merge
 import numpy as np
+import requests
+from dateutil.relativedelta import relativedelta
 
 # Try to import the separate auth module if available
 try:
@@ -118,24 +121,30 @@ except ImportError:
                 return False
 
 class SnowDepthCalculator:
-    def __init__(self, start_date: str, end_date: str, scale: int = 500):
+    def __init__(self, scale: int = 500):
         """Initialize the Snow Depth Calculator
         
         Args:
-            start_date: Start date in 'YYYY-MM-DD' format
-            end_date: End date in 'YYYY-MM-DD' format
             scale: Pixel resolution in meters (default: 500)
         """
-        self.start_date = start_date
-        self.end_date = end_date
         self.scale = scale
         
-    def calculate_snow_depth(self, aoi):
-        """Calculate snow depth for given AOI"""
+    def calculate_monthly_snow_depth(self, aoi, year: int, month: int):
+        """Calculate snow depth for a specific month and year"""
+        # Create date range for the month
+        start_date = datetime.date(year, month, 1)
+        if month == 12:
+            end_date = datetime.date(year + 1, 1, 1) - datetime.timedelta(days=1)
+        else:
+            end_date = datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)
+        
+        start_date_str = start_date.strftime('%Y-%m-%d')
+        end_date_str = end_date.strftime('%Y-%m-%d')
+        
         # MODIS Snow Cover
         snowExtent = ee.ImageCollection('MODIS/061/MOD10A1') \
             .select("NDSI_Snow_Cover") \
-            .filterDate(self.start_date, self.end_date) \
+            .filterDate(start_date_str, end_date_str) \
             .filterBounds(aoi)
         
         meanNDSI = snowExtent.mean().divide(100)
@@ -144,7 +153,7 @@ class SnowDepthCalculator:
         # GLDAS SWE
         gldasSWE = ee.ImageCollection("NASA/GLDAS/V021/NOAH/G025/T3H") \
             .select("SWE_inst") \
-            .filterDate(self.start_date, self.end_date) \
+            .filterDate(start_date_str, end_date_str) \
             .filterBounds(aoi) \
             .mean()
         
@@ -178,6 +187,21 @@ def initialize_earth_engine(project_id: str, credentials_content: Optional[str] 
         
     auth = GEEAuth()
     return auth.initialize(project_id, credentials_content)
+
+def generate_month_list(start_date: datetime.date, end_date: datetime.date) -> List[tuple]:
+    """Generate list of (year, month) tuples for the date range"""
+    months = []
+    current_date = start_date.replace(day=1)  # Start from first day of month
+    
+    while current_date <= end_date:
+        months.append((current_date.year, current_date.month))
+        # Add one month
+        if current_date.month == 12:
+            current_date = current_date.replace(year=current_date.year + 1, month=1)
+        else:
+            current_date = current_date.replace(month=current_date.month + 1)
+    
+    return months
 
 def create_chunks(bounds: List[float], max_pixels: int = 50000000) -> List[List[float]]:
     """Create chunks from bounds to avoid memory limits
@@ -222,13 +246,15 @@ def create_chunks(bounds: List[float], max_pixels: int = 50000000) -> List[List[
     return chunks
 
 def download_chunk(calculator: SnowDepthCalculator, chunk_bounds: List[float], 
-                  chunk_id: int, output_dir: str) -> str:
-    """Download a single chunk
+                  chunk_id: int, year: int, month: int, output_dir: str) -> str:
+    """Download a single chunk for a specific month
     
     Args:
         calculator: SnowDepthCalculator instance
         chunk_bounds: [min_lon, min_lat, max_lon, max_lat]
         chunk_id: Unique identifier for the chunk
+        year: Year for the calculation
+        month: Month for the calculation
         output_dir: Directory to save the chunk
         
     Returns:
@@ -237,8 +263,8 @@ def download_chunk(calculator: SnowDepthCalculator, chunk_bounds: List[float],
     # Create geometry from bounds
     geometry = ee.Geometry.Rectangle(chunk_bounds)
     
-    # Calculate snow depth
-    snow_depth = calculator.calculate_snow_depth(geometry)
+    # Calculate snow depth for specific month
+    snow_depth = calculator.calculate_monthly_snow_depth(geometry, year, month)
     
     # Create download URL
     url = snow_depth.getDownloadURL({
@@ -249,11 +275,10 @@ def download_chunk(calculator: SnowDepthCalculator, chunk_bounds: List[float],
     })
     
     # Download the file
-    import requests
     response = requests.get(url)
     response.raise_for_status()
     
-    chunk_path = os.path.join(output_dir, f'snow_depth_chunk_{chunk_id}.tif')
+    chunk_path = os.path.join(output_dir, f'snow_depth_{year}_{month:02d}_chunk_{chunk_id}.tif')
     with open(chunk_path, 'wb') as f:
         f.write(response.content)
     
@@ -294,9 +319,9 @@ def merge_chunks(chunk_paths: List[str], output_path: str):
     for src in src_files_to_mosaic:
         src.close()
 
-def process_and_download(calculator: SnowDepthCalculator, aoi_geom, 
-                        progress_bar, status_text) -> str:
-    """Process AOI and download snow depth data with chunking"""
+def process_monthly_data(calculator: SnowDepthCalculator, aoi_geom, 
+                        months_list: List[tuple], progress_bar, status_text) -> bytes:
+    """Process AOI and generate monthly snow depth data as a zip file"""
     
     # Get bounds from geometry
     if hasattr(aoi_geom, 'bounds'):
@@ -311,37 +336,60 @@ def process_and_download(calculator: SnowDepthCalculator, aoi_geom,
     
     # Create chunks
     chunks = create_chunks(bounds)
+    total_tasks = len(months_list) * len(chunks)
+    current_task = 0
     
-    status_text.text(f"Processing {len(chunks)} chunks...")
+    # Create in-memory zip buffer
+    zip_buffer = io.BytesIO()
     
-    # Create temporary directory for chunks
-    with tempfile.TemporaryDirectory() as temp_dir:
-        chunk_paths = []
-        
-        # Process each chunk
-        for i, chunk_bounds in enumerate(chunks):
-            try:
-                status_text.text(f"Downloading chunk {i+1}/{len(chunks)}...")
-                progress_bar.progress((i + 1) / len(chunks))
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        # Create temporary directory for processing
+        with tempfile.TemporaryDirectory() as temp_dir:
+            
+            # Process each month
+            for year, month in months_list:
+                month_name = datetime.date(year, month, 1).strftime('%Y_%m')
+                status_text.text(f"Processing {month_name} ({len(chunks)} chunks)...")
                 
-                chunk_path = download_chunk(calculator, chunk_bounds, i, temp_dir)
-                chunk_paths.append(chunk_path)
+                chunk_paths = []
                 
-            except Exception as e:
-                st.error(f"Error processing chunk {i+1}: {str(e)}")
-                continue
-        
-        if not chunk_paths:
-            raise Exception("No chunks were successfully processed")
-        
-        # Merge chunks
-        status_text.text("Merging chunks...")
-        output_path = os.path.join(temp_dir, 'snow_depth_merged.tif')
-        merge_chunks(chunk_paths, output_path)
-        
-        # Read the merged file and return as bytes
-        with open(output_path, 'rb') as f:
-            return f.read()
+                # Process each chunk for this month
+                for chunk_id, chunk_bounds in enumerate(chunks):
+                    try:
+                        current_task += 1
+                        progress_bar.progress(current_task / total_tasks)
+                        
+                        chunk_path = download_chunk(
+                            calculator, chunk_bounds, chunk_id, year, month, temp_dir
+                        )
+                        chunk_paths.append(chunk_path)
+                        
+                    except Exception as e:
+                        st.warning(f"Error processing chunk {chunk_id+1} for {month_name}: {str(e)}")
+                        continue
+                
+                if not chunk_paths:
+                    st.warning(f"No chunks processed successfully for {month_name}")
+                    continue
+                
+                # Merge chunks for this month
+                status_text.text(f"Merging chunks for {month_name}...")
+                monthly_output_path = os.path.join(temp_dir, f'snow_depth_{month_name}.tif')
+                merge_chunks(chunk_paths, monthly_output_path)
+                
+                # Add to zip file
+                status_text.text(f"Adding {month_name} to zip...")
+                with open(monthly_output_path, 'rb') as f:
+                    zip_file.writestr(f'snow_depth_{month_name}.tif', f.read())
+                
+                # Clean up chunk files
+                for chunk_path in chunk_paths:
+                    try:
+                        os.remove(chunk_path)
+                    except:
+                        pass
+    
+    return zip_buffer.getvalue()
 
 def main():
     st.set_page_config(
@@ -350,8 +398,8 @@ def main():
         layout="wide"
     )
     
-    st.title("❄️ Snow Depth Calculator")
-    st.markdown("Calculate snow depth using MODIS and GLDAS data from Google Earth Engine")
+    st.title("❄️ Snow Depth Calculator - Monthly Analysis")
+    st.markdown("Calculate monthly snow depth using MODIS and GLDAS data from Google Earth Engine")
     
     # Authentication Section
     st.header("🔐 Authentication")
@@ -458,7 +506,7 @@ def main():
     st.divider()
     
     # Main application content starts here
-    st.header("📊 Snow Depth Analysis")
+    st.header("📊 Monthly Snow Depth Analysis")
     
     # Sidebar for parameters
     st.sidebar.header("Parameters")
@@ -468,14 +516,14 @@ def main():
     with col1:
         start_date = st.date_input(
             "Start Date",
-            value=datetime.date(2023, 12, 1),
+            value=datetime.date(2020, 1, 1),
             max_value=datetime.date.today()
         )
     
     with col2:
         end_date = st.date_input(
             "End Date",
-            value=datetime.date(2024, 3, 31),
+            value=datetime.date(2023, 12, 31),
             max_value=datetime.date.today()
         )
     
@@ -493,6 +541,11 @@ def main():
     if start_date >= end_date:
         st.sidebar.error("Start date must be before end date")
         st.stop()
+    
+    # Generate month list and show info
+    months_list = generate_month_list(start_date, end_date)
+    st.sidebar.info(f"📅 **Total months to process:** {len(months_list)}")
+    st.sidebar.markdown(f"**Date range:** {start_date.strftime('%Y-%m')} to {end_date.strftime('%Y-%m')}")
     
     # Main content area
     col1, col2 = st.columns([2, 1])
@@ -611,43 +664,48 @@ def main():
             except:
                 st.info("Area calculation not available")
             
+            # Show number of files that will be generated
+            st.metric("Files to generate", f"{len(months_list)} GeoTIFF files")
+            
             # Processing button
-            if st.button("🚀 Calculate Snow Depth", type="primary"):
+            if st.button("🚀 Generate Monthly Snow Depth", type="primary"):
                 # Create calculator
-                calculator = SnowDepthCalculator(
-                    start_date=start_date.strftime('%Y-%m-%d'),
-                    end_date=end_date.strftime('%Y-%m-%d'),
-                    scale=scale
-                )
+                calculator = SnowDepthCalculator(scale=scale)
                 
                 # Create progress indicators
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
                 try:
-                    # Process and download
-                    with st.spinner("Processing..."):
-                        tiff_data = process_and_download(
-                            calculator, aoi_geom, progress_bar, status_text
+                    # Process and create zip
+                    with st.spinner("Processing monthly data..."):
+                        zip_data = process_monthly_data(
+                            calculator, aoi_geom, months_list, progress_bar, status_text
                         )
                     
                     progress_bar.progress(100)
                     status_text.text("✅ Processing complete!")
                     
                     # Provide download button
-                    filename = f"snow_depth_{start_date}_{end_date}_{scale}m.tif"
+                    filename = f"snow_depth_monthly_{start_date.strftime('%Y%m')}_{end_date.strftime('%Y%m')}_{scale}m.zip"
                     st.download_button(
-                        label="📥 Download Snow Depth GeoTIFF",
-                        data=tiff_data,
+                        label="📥 Download Monthly Snow Depth Data (ZIP)",
+                        data=zip_data,
                         file_name=filename,
-                        mime="image/tiff"
+                        mime="application/zip"
                     )
                     
-                    st.success("Snow depth calculation completed successfully!")
+                    st.success(f"Monthly snow depth calculation completed! Generated {len(months_list)} files.")
+                    
+                    # Show what's in the zip
+                    with st.expander("📋 Files included in the ZIP"):
+                        for year, month in months_list:
+                            month_name = datetime.date(year, month, 1).strftime('%Y_%m')
+                            st.text(f"snow_depth_{month_name}.tif")
                     
                 except Exception as e:
                     st.error(f"Error during processing: {str(e)}")
-                    st.info("Try reducing the area size or increasing the resolution scale.")
+                    st.info("Try reducing the area size, date range, or increasing the resolution scale.")
         
         else:
             st.info("Please define an Area of Interest first")
@@ -655,22 +713,30 @@ def main():
     # Information section
     with st.expander("ℹ️ About this tool"):
         st.markdown("""
-        This tool calculates snow depth using:
+        This tool calculates **monthly** snow depth using:
         
         **Data Sources:**
         - **MODIS Snow Cover** (MOD10A1): Normalized Difference Snow Index
         - **GLDAS Snow Water Equivalent**: NASA Global Land Data Assimilation System
         
         **Algorithm:**
-        1. Calculate Fractional Snow Cover (FSC) from MODIS NDSI
-        2. Estimate snow density based on FSC
-        3. Combine GLDAS SWE with FSC to get fine-resolution SWE
-        4. Calculate snow depth = SWE / snow density
+        1. For each month in the selected date range:
+           - Calculate Fractional Snow Cover (FSC) from MODIS NDSI
+           - Estimate snow density based on FSC
+           - Combine GLDAS SWE with FSC to get fine-resolution SWE
+           - Calculate snow depth = SWE / snow density
+        2. Package all monthly GeoTIFF files into a single ZIP archive
+        
+        **Output:**
+        - One GeoTIFF file per month in the date range
+        - Files are named: `snow_depth_YYYY_MM.tif`
+        - All files packaged in a ZIP archive for download
         
         **Notes:**
         - Large areas are automatically chunked to avoid memory limits
-        - Processing time depends on area size and resolution
+        - Processing time depends on area size, number of months, and resolution
         - Authentication with Google Earth Engine is required
+        - Each monthly calculation uses the mean values for that specific month
         """)
 
 if __name__ == "__main__":
