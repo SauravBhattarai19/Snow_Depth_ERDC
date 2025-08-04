@@ -1,0 +1,174 @@
+# Data and Results Directories
+# Ignore all data folders and their contents
+**/data/
+**/Data/
+**/DATA/
+
+# Snow depth data directories
+enhanced_snow_depth_monthly_*/
+snow_depth_monthly_*/
+snow_monthly_output_*/
+
+# Results and comparison directories
+comparison_results/
+**/comparison_results/
+results/
+**/results/
+output/
+**/output/
+outputs/
+**/outputs/
+
+# Ground truth data
+**/snod/
+**/ground_truth/
+
+# Temporary and cache directories
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env/
+conda-meta/
+.conda/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Authentication and credentials
+**/credentials/
+**/auth/
+*.json
+!requirements.txt
+!package.json
+!*.example.json
+
+# Log files
+*.log
+logs/
+**/logs/
+
+# Large data files
+*.tif
+*.tiff
+*.TIF
+*.TIFF
+*.hdf
+*.nc
+*.nc4
+*.h5
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# CSV and Excel files with data (keep small config files)
+**/data*.csv
+**/results*.csv
+**/output*.csv
+**/comparison*.csv
+detailed_results*.csv
+summary*.csv
+*.xlsx
+*.xls
+
+# Plot and image outputs
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.svg
+!**/assets/*.png
+!**/assets/*.jpg
+!**/static/*.png
+!**/static/*.jpg
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+temp/
+
+# OS generated files
+.DS_Store?
+ehthumbs.db
+Icon?
+
+# Python distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Streamlit
+.streamlit/
