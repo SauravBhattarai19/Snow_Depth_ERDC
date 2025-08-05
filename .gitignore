@@ -3,6 +3,7 @@
 **/data/
 **/Data/
 **/DATA/
+Json/
 
 # Snow depth data directories
 enhanced_snow_depth_monthly_*/
