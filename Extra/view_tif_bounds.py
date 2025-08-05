@@ -5,10 +5,10 @@ from rasterio.warp import calculate_default_transform, reproject, Resampling
 from rasterio.crs import CRS
 
 # Path to the folder containing the .tif files
-TIF_DIR = os.path.join(os.path.dirname(__file__), '../snow_monthly_output_2019_to_2022/snod/2019')
+TIF_DIR = os.path.join(os.path.dirname(__file__), '../snow_monthly_output_2018_to_2021/snod/2019')
 TIF_DIR = os.path.abspath(TIF_DIR)
 OUT_DIR = "./Json"
-os.makedirs(TIF_DIR, exist_ok=True)
+os.makedirs(OUT_DIR, exist_ok=True)
 
 
 def get_tif_files(folder):

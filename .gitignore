@@ -18,6 +18,8 @@ output/
 **/output/
 outputs/
 **/outputs/
+backup_files/
+**/backup_files/
 
 # Ground truth data
 **/snod/
